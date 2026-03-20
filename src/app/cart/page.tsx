@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import toast from "react-hot-toast";
 import {
   FiMinus,
@@ -1676,34 +1676,33 @@ const CheckoutModal = ({
   const [isLoadingAddress, setIsLoadingAddress] = useState(false);
   const [errors, setErrors] = useState<any>({});
 
-  // Address management states
+  // Address management
   const [defaultAddress, setDefaultAddress] = useState<any>(null);
   const [showAddressForm, setShowAddressForm] = useState(false);
   const [hasLoadedAddress, setHasLoadedAddress] = useState(false);
 
+  // ✅ Submission guard refs — prevents duplicate orders
+  const orderPlacedRef = useRef(false); // permanently true after success
+  const isSubmittingRef = useRef(false); // true while API call in-flight
+
   const router = useRouter();
   const user = useAppSelector(selectUser);
 
-  // Load last order address when modal opens
+  // ── Load last order address when modal opens ───────────────────────────
+
   useEffect(() => {
     const loadDefaultAddress = async () => {
       if (!isOpen || hasLoadedAddress || !user?.user?.user_id) return;
 
       setIsLoadingAddress(true);
-
       try {
         const result = await fetchLastOrder(user.user.user_id);
 
         if (result.success && result.order?.Address) {
           const address = result.order.Address;
-
-          // Find matching society
           const matchedSociety = findSocietyFromAddress(address);
 
-          // Set default address
           setDefaultAddress(address);
-
-          // Also set form data in background (for editing)
           setFormData({
             fullName: address.fullName || "",
             phone: address.phone || "",
@@ -1715,23 +1714,11 @@ const CheckoutModal = ({
             pincode: address.pincode || "",
             addressType: address.addressType || "home",
           });
-
-          if (matchedSociety) {
-            setSelectedSociety(matchedSociety);
-          }
-
-          // Show saved address, not form
+          if (matchedSociety) setSelectedSociety(matchedSociety);
           setShowAddressForm(false);
-
-          // toast.success("Default address loaded", {
-          //   icon: "📍",
-          //   duration: 2000,
-          // });
         } else {
-          // No previous order - show form directly
           setShowAddressForm(true);
         }
-
         setHasLoadedAddress(true);
       } catch (error) {
         console.error("Error loading address:", error);
@@ -1745,15 +1732,22 @@ const CheckoutModal = ({
     loadDefaultAddress();
   }, [isOpen, hasLoadedAddress, user]);
 
-  // Reset modal state when closed
+  // ── Reset all state when modal closes ─────────────────────────────────
+
   useEffect(() => {
     if (!isOpen) {
       setStep(1);
       setHasLoadedAddress(false);
       setShowAddressForm(false);
       setDefaultAddress(null);
+      setIsLoading(false);
+      // ✅ Reset submission guards so a re-opened modal works fresh
+      orderPlacedRef.current = false;
+      isSubmittingRef.current = false;
     }
   }, [isOpen]);
+
+  // ── Helpers ────────────────────────────────────────────────────────────
 
   const validateForm = () => {
     const newErrors: any = {};
@@ -1765,7 +1759,6 @@ const CheckoutModal = ({
       newErrors.addressLine1 = "Address is required";
     if (!formData.pincode.trim() || formData.pincode.length !== 6)
       newErrors.pincode = "Valid 6-digit pincode required";
-
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -1773,18 +1766,14 @@ const CheckoutModal = ({
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
-    if (errors[name]) {
-      setErrors((prev: any) => ({ ...prev, [name]: "" }));
-    }
+    if (errors[name]) setErrors((prev: any) => ({ ...prev, [name]: "" }));
   };
 
   const handleEditAddress = () => {
     setShowAddressForm(true);
-    // toast.info("Edit your address", { icon: "✏️", duration: 2000 });
   };
 
   const handleAddNewAddress = () => {
-    // Clear form
     setFormData({
       fullName: "",
       phone: "",
@@ -1798,12 +1787,10 @@ const CheckoutModal = ({
     });
     setSelectedSociety(null);
     setShowAddressForm(true);
-    // toast.info("Add new delivery address", { icon: "➕", duration: 2000 });
   };
 
   const handleCancelAddressEdit = () => {
     if (defaultAddress) {
-      // Restore default address data
       setFormData({
         fullName: defaultAddress.fullName || "",
         phone: defaultAddress.phone || "",
@@ -1815,39 +1802,37 @@ const CheckoutModal = ({
         pincode: defaultAddress.pincode || "",
         addressType: defaultAddress.addressType || "home",
       });
-
       const matchedSociety = findSocietyFromAddress(defaultAddress);
-      if (matchedSociety) {
-        setSelectedSociety(matchedSociety);
-      }
-
+      if (matchedSociety) setSelectedSociety(matchedSociety);
       setShowAddressForm(false);
       toast.success("Using default address", { icon: "📍", duration: 2000 });
     }
   };
 
   const handleNext = () => {
-    // If using default address (not showing form)
     if (defaultAddress && !showAddressForm) {
       setStep(2);
-      toast.success("Proceed to review your order", { icon: "✅" });
       return;
     }
-
-    // If showing form, validate it
     if (step === 1 && validateForm()) {
       setStep(2);
-      toast.success("Proceed to review your order", { icon: "✅" });
     } else if (step === 1) {
       toast.error("Please fill all required fields", { icon: "⚠️" });
     }
   };
 
+  // ── Place Order ────────────────────────────────────────────────────────
+
   const handlePlaceOrder = async () => {
+    // ✅ GUARD: block if already submitting OR order already succeeded
+    if (isSubmittingRef.current || orderPlacedRef.current) return;
+
+    // ✅ Lock synchronously before any await — rapid clicks are stopped here
+    isSubmittingRef.current = true;
     setIsLoading(true);
+
     const loadingToast = toast.loading("Placing your order...");
 
-    // Determine which address to use
     const addressToUse =
       defaultAddress && !showAddressForm
         ? defaultAddress
@@ -1898,7 +1883,10 @@ const CheckoutModal = ({
       toast.dismiss(loadingToast);
 
       if (response.ok && (data.success || data.status === "success")) {
-        const orderId = data.orderId || data.data?.id || data.id || "N/A";
+        // ✅ Permanently lock — this order can never be re-submitted
+        orderPlacedRef.current = true;
+        // NOTE: intentionally NOT resetting isLoading here —
+        // keeps button disabled during the 1.5s close delay
 
         toast.success(
           <div className="flex flex-col gap-2 max-w-md">
@@ -1923,25 +1911,27 @@ const CheckoutModal = ({
 
         setTimeout(() => onClose(true), 1500);
       } else {
+        // ✅ Release lock on API error so user can retry
+        isSubmittingRef.current = false;
+        setIsLoading(false);
+
         const errorList: string[] = [];
         if (data.message) errorList.push(data.message);
         if (data.error) errorList.push(data.error);
-
         if (data.errors) {
           if (Array.isArray(data.errors)) {
             data.errors.forEach((err: any) => errorList.push(String(err)));
           } else if (typeof data.errors === "object") {
             Object.keys(data.errors).forEach((key) => {
               const val = data.errors[key];
-              if (Array.isArray(val)) {
-                errorList.push(`${key}: ${val.join(", ")}`);
-              } else {
-                errorList.push(`${key}: ${val}`);
-              }
+              errorList.push(
+                Array.isArray(val)
+                  ? `${key}: ${val.join(", ")}`
+                  : `${key}: ${val}`
+              );
             });
           }
         }
-
         if (errorList.length === 0) errorList.push("Failed to place order");
         const uniqueErrors = Array.from(new Set(errorList));
 
@@ -1968,6 +1958,10 @@ const CheckoutModal = ({
       }
     } catch (error) {
       toast.dismiss(loadingToast);
+      // ✅ Release lock on network error so user can retry
+      isSubmittingRef.current = false;
+      setIsLoading(false);
+
       toast.error(
         <div className="flex flex-col gap-2">
           <span className="font-bold text-base">Network Error</span>
@@ -1986,10 +1980,12 @@ const CheckoutModal = ({
           },
         }
       );
-    } finally {
-      setIsLoading(false);
     }
+    // ✅ No finally block — loading stays true after success to block the button
+    // until the modal closes via setTimeout above
   };
+
+  // ── Derived ────────────────────────────────────────────────────────────
 
   const isStep1Valid =
     defaultAddress && !showAddressForm
@@ -2002,8 +1998,11 @@ const CheckoutModal = ({
 
   if (!isOpen) return null;
 
+  // ── Render ─────────────────────────────────────────────────────────────
+
   return (
     <>
+      {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 transition-opacity"
         onClick={() => onClose(false)}
@@ -2014,7 +2013,7 @@ const CheckoutModal = ({
           className="bg-white w-full lg:max-w-2xl lg:rounded-2xl max-h-[90vh] lg:max-h-[85vh] overflow-hidden pointer-events-auto flex flex-col shadow-2xl"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Header */}
+          {/* ── Header ── */}
           <div className="flex items-center justify-between p-4 lg:p-6 border-b border-gray-200 flex-shrink-0">
             <div className="flex items-center gap-3">
               {step > 1 && (
@@ -2027,8 +2026,7 @@ const CheckoutModal = ({
               )}
               <div>
                 <h2 className="text-xl lg:text-2xl font-bold text-gray-900">
-                  {step === 1 && "Delivery Address"}
-                  {step === 2 && "Review & Confirm"}
+                  {step === 1 ? "Delivery Address" : "Review & Confirm"}
                 </h2>
                 <p className="text-sm text-gray-500 mt-0.5">Step {step} of 2</p>
               </div>
@@ -2041,7 +2039,7 @@ const CheckoutModal = ({
             </button>
           </div>
 
-          {/* Progress Bar */}
+          {/* ── Progress Bar ── */}
           <div className="flex gap-2 px-4 lg:px-6 py-3 bg-gray-50 flex-shrink-0">
             {[1, 2].map((s) => (
               <div
@@ -2053,11 +2051,11 @@ const CheckoutModal = ({
             ))}
           </div>
 
-          {/* Loading Overlay */}
+          {/* ── Address Loading Overlay ── */}
           {isLoadingAddress && (
             <div className="absolute inset-0 bg-white/90 backdrop-blur-sm z-10 flex items-center justify-center">
               <div className="flex flex-col items-center gap-3">
-                <div className="w-12 h-12 border-4 border-green-600 border-t-transparent rounded-full animate-spin"></div>
+                <div className="w-12 h-12 border-4 border-green-600 border-t-transparent rounded-full animate-spin" />
                 <p className="text-sm font-semibold text-gray-700">
                   Loading address...
                 </p>
@@ -2065,31 +2063,40 @@ const CheckoutModal = ({
             </div>
           )}
 
-          {/* Content */}
+          {/* ── Scrollable Content ── */}
           <div className="flex-1 overflow-y-auto">
-            {/* STEP 1: ADDRESS */}
+            {/* ════════════════ STEP 1: ADDRESS ════════════════ */}
             {step === 1 && (
               <div className="p-4 lg:p-6 space-y-4">
-                {/* Show Default Address or Form */}
                 {defaultAddress && !showAddressForm ? (
                   <>
-                    {/* Saved Address Display */}
+                    {/* Saved address card */}
                     <SavedAddressCard
                       address={defaultAddress}
                       society={selectedSociety}
                       onEdit={handleEditAddress}
                     />
 
-                    {/* Add New Address Button */}
+                    {/* Add new address */}
                     <button
                       onClick={handleAddNewAddress}
-                      className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-600 hover:bg-green-50 transition-all flex items-center justify-center gap-2 text-gray-600 hover:text-green-700 font-semibold active:scale-98"
+                      className="w-full bg-gray-50 hover:bg-green-50 border border-gray-200 hover:border-green-600 rounded-xl flex items-center gap-3.5 px-4 py-4 transition-all active:scale-[0.99] text-left group"
                     >
-                      <FiPlus className="w-5 h-5" />
-                      Add New Delivery Address
+                      <span className="w-10 h-10 rounded-[10px] bg-green-100 group-hover:bg-green-200 flex items-center justify-center flex-shrink-0 transition-colors">
+                        <FiPlus className="w-5 h-5 text-green-700" />
+                      </span>
+                      <span className="flex flex-col">
+                        <span className="text-sm font-medium text-gray-900">
+                          Add New Delivery Address
+                        </span>
+                        <span className="text-xs text-gray-500 mt-0.5">
+                          Home, office, or custom location
+                        </span>
+                      </span>
+                      <FiChevronRight className="w-4 h-4 text-gray-400 group-hover:text-green-600 ml-auto transition-colors" />
                     </button>
 
-                    {/* Quick Info */}
+                    {/* Delivery info */}
                     <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                       <div className="flex items-center gap-3">
                         <FiTruck className="text-green-600 w-4 h-4 flex-shrink-0" />
@@ -2105,9 +2112,9 @@ const CheckoutModal = ({
                     </div>
                   </>
                 ) : (
-                  // Address Form
+                  /* ── Address Form ── */
                   <div className="space-y-4">
-                    {/* Back button if editing default address */}
+                    {/* Back to saved address */}
                     {defaultAddress && showAddressForm && (
                       <button
                         onClick={handleCancelAddressEdit}
@@ -2118,7 +2125,7 @@ const CheckoutModal = ({
                       </button>
                     )}
 
-                    {/* Address Type */}
+                    {/* Address type */}
                     <div className="flex gap-2">
                       {(["home", "work", "other"] as const).map((type) => (
                         <button
@@ -2141,7 +2148,7 @@ const CheckoutModal = ({
                       ))}
                     </div>
 
-                    {/* Society Selector */}
+                    {/* Society selector */}
                     <SocietySelector
                       selectedSociety={selectedSociety}
                       setSelectedSociety={setSelectedSociety}
@@ -2153,7 +2160,7 @@ const CheckoutModal = ({
                       setErrors={setErrors}
                     />
 
-                    {/* Full Name */}
+                    {/* Full name */}
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-2">
                         Full Name *
@@ -2202,7 +2209,6 @@ const CheckoutModal = ({
                           </p>
                         )}
                       </div>
-
                       <div>
                         <label className="block text-sm font-semibold text-gray-700 mb-2">
                           Email (Optional)
@@ -2218,10 +2224,10 @@ const CheckoutModal = ({
                       </div>
                     </div>
 
-                    {/* Address Line 1 */}
+                    {/* Address line 1 */}
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-2">
-                        House/Flat No, Building Name *
+                        House / Flat No, Building Name *
                       </label>
                       <input
                         type="text"
@@ -2242,7 +2248,7 @@ const CheckoutModal = ({
                       )}
                     </div>
 
-                    {/* Address Line 2 */}
+                    {/* Address line 2 */}
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-2">
                         Landmark (Optional)
@@ -2282,7 +2288,7 @@ const CheckoutModal = ({
                       )}
                     </div>
 
-                    {/* Info Banner */}
+                    {/* Info banner */}
                     <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                       <div className="flex items-center gap-3">
                         <FiMapPin className="text-green-600 w-4 h-4 flex-shrink-0" />
@@ -2301,17 +2307,19 @@ const CheckoutModal = ({
               </div>
             )}
 
-            {/* STEP 2: REVIEW */}
+            {/* ════════════════ STEP 2: REVIEW ════════════════ */}
             {step === 2 && (
               <div className="p-4 lg:p-6 space-y-4">
-                {/* Address Summary */}
+                {/* Address summary */}
                 <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                   <div className="flex items-start justify-between mb-3">
                     <h3 className="font-bold text-gray-900 text-base">
                       Delivering to{" "}
-                      {defaultAddress && !showAddressForm
-                        ? defaultAddress.addressType
-                        : formData.addressType}
+                      <span className="capitalize">
+                        {defaultAddress && !showAddressForm
+                          ? defaultAddress.addressType
+                          : formData.addressType}
+                      </span>
                     </h3>
                     <button
                       onClick={() => setStep(1)}
@@ -2320,7 +2328,7 @@ const CheckoutModal = ({
                       Edit
                     </button>
                   </div>
-                  <div className="space-y-2 text-sm text-gray-600">
+                  <div className="space-y-1.5 text-sm text-gray-600">
                     {defaultAddress && !showAddressForm ? (
                       <>
                         <p className="font-semibold text-gray-900">
@@ -2337,7 +2345,7 @@ const CheckoutModal = ({
                           {defaultAddress.societyArea}
                         </p>
                         <p>
-                          {defaultAddress.city}, {defaultAddress.state} -{" "}
+                          {defaultAddress.city}, {defaultAddress.state} –{" "}
                           {defaultAddress.pincode}
                         </p>
                       </>
@@ -2355,13 +2363,13 @@ const CheckoutModal = ({
                         <p className="font-semibold text-green-700">
                           {selectedSociety?.name}, {selectedSociety?.area}
                         </p>
-                        <p>Ahmedabad, Gujarat - {formData.pincode}</p>
+                        <p>Ahmedabad, Gujarat – {formData.pincode}</p>
                       </>
                     )}
                   </div>
                 </div>
 
-                {/* Payment Method - COD */}
+                {/* Payment method — COD */}
                 <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg p-4 border-2 border-green-300">
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-3">
@@ -2395,14 +2403,25 @@ const CheckoutModal = ({
                       </div>
                     </div>
                   </div>
+
+                  <div className="mt-3 pt-3 border-t border-green-200 flex items-center gap-2">
+                    <FiShield className="w-4 h-4 text-green-600 flex-shrink-0" />
+                    <p className="text-xs text-gray-600">
+                      Please keep exact change ready:{" "}
+                      <span className="font-bold text-gray-900">
+                        ₹{cartData.total.toFixed(2)}
+                      </span>
+                    </p>
+                  </div>
                 </div>
 
-                {/* Order Summary */}
+                {/* Order items */}
                 <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                   <h3 className="font-bold text-gray-900 text-sm mb-3">
-                    Order Summary ({cartData.items.length} items)
+                    Order Summary ({cartData.items.length} item
+                    {cartData.items.length !== 1 ? "s" : ""})
                   </h3>
-                  <div className="space-y-2 max-h-48 overflow-y-auto mb-3">
+                  <div className="space-y-2.5 max-h-48 overflow-y-auto mb-3">
                     {cartData.items.slice(0, 3).map((item, index) => (
                       <div
                         key={index}
@@ -2421,19 +2440,19 @@ const CheckoutModal = ({
                             Qty: {item.quantity} × ₹{item.price}
                           </p>
                         </div>
-                        <p className="font-bold text-gray-900 text-sm">
+                        <p className="font-bold text-gray-900 text-sm flex-shrink-0">
                           ₹{(item.quantity * item.price).toFixed(2)}
                         </p>
                       </div>
                     ))}
                     {cartData.items.length > 3 && (
-                      <p className="text-sm text-gray-500 text-center pt-2">
+                      <p className="text-sm text-gray-500 text-center pt-1">
                         +{cartData.items.length - 3} more items
                       </p>
                     )}
                   </div>
 
-                  {/* Price Breakdown */}
+                  {/* Price breakdown */}
                   <div className="border-t border-gray-200 pt-3 space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-gray-600">Subtotal</span>
@@ -2445,7 +2464,7 @@ const CheckoutModal = ({
                       <div className="flex justify-between text-green-700">
                         <span>Discount</span>
                         <span className="font-semibold">
-                          -₹{cartData.discount.toFixed(2)}
+                          −₹{cartData.discount.toFixed(2)}
                         </span>
                       </div>
                     )}
@@ -2474,7 +2493,7 @@ const CheckoutModal = ({
                   </div>
                 </div>
 
-                {/* Delivery Info */}
+                {/* Delivery estimate */}
                 <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg p-4 border border-green-200">
                   <div className="flex items-center gap-3">
                     <FiTruck className="text-green-600 w-5 h-5" />
@@ -2490,26 +2509,27 @@ const CheckoutModal = ({
             )}
           </div>
 
-          {/* Footer */}
+          {/* ── Footer ── */}
           <div className="border-t border-gray-200 p-4 lg:p-6 flex-shrink-0 bg-white">
             {step === 1 ? (
               <button
                 onClick={handleNext}
                 disabled={!isStep1Valid || isLoadingAddress}
-                className="w-full py-3.5 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-all disabled:bg-gray-300 disabled:cursor-not-allowed shadow-lg shadow-green-600/30 active:scale-98"
+                className="w-full py-3.5 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-all disabled:bg-gray-300 disabled:cursor-not-allowed shadow-lg shadow-green-600/30 active:scale-[0.98] flex items-center justify-center gap-2"
               >
                 Continue to Review
-                <FiChevronRight className="inline ml-2 w-4 h-4" />
+                <FiChevronRight className="w-4 h-4" />
               </button>
             ) : (
               <button
                 onClick={handlePlaceOrder}
-                disabled={isLoading}
-                className="w-full py-3.5 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-all disabled:bg-gray-300 shadow-lg shadow-green-600/30 flex items-center justify-center gap-2 active:scale-98"
+                // ✅ Disabled while loading AND permanently after success
+                disabled={isLoading || orderPlacedRef.current}
+                className="w-full py-3.5 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition-all disabled:bg-gray-300 disabled:cursor-not-allowed shadow-lg shadow-green-600/30 flex items-center justify-center gap-2 active:scale-[0.98]"
               >
                 {isLoading ? (
                   <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     <span>Placing Order...</span>
                   </>
                 ) : (
