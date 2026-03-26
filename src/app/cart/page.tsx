@@ -2765,7 +2765,7 @@ const ShoppingCartPage = () => {
                 </p>
               </div>
               <button
-                onClick={() => router.push("/shop")}
+                onClick={() => router.push("/products")}
                 className="flex items-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-lg lg:rounded-xl hover:bg-gray-50 transition-colors active:scale-95"
               >
                 <FiArrowLeft className="w-4 h-4" />
