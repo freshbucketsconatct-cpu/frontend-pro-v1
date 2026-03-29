@@ -1535,11 +1535,14 @@ const SavedAddressDisplay = ({
 const fetchLastOrder = async (userId: string) => {
   try {
     const token = localStorage.getItem("token");
-    const response = await fetch(`${BASE_URL}/api/orders?page=1&limit=1&userId=user.id`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
+     const response = await fetch(
+      `${BASE_URL}/api/orders?page=1&limit=1?userId=user.id`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
 
     const result = await response.json();
 
