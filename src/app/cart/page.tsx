@@ -1535,8 +1535,8 @@ const SavedAddressDisplay = ({
 const fetchLastOrder = async (userId: string) => {
   try {
     const token = localStorage.getItem("token");
-     const response = await fetch(
-      `${BASE_URL}/api/orders?page=1&limit=1?userId=userId`,
+    const response = await fetch(
+      `${BASE_URL}/api/orders?page=1&limit=1&userId=${userId}`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
